@@ -21,7 +21,7 @@
           "aarch64-darwin" = "domainarr-macos-arm64";
         }.${system} or (throw "Unsupported system: ${system}");
 
-        # Placeholder hashes - update after first release with binaries
+        # Placeholder hashes - updated automatically by CI after release
         hashes = {
           "x86_64-linux" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
           "aarch64-linux" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -65,12 +65,19 @@
           drv = domainarr;
         };
 
-        # Dev shell for contributors
+        # Development shell - enter with `nix develop` or direnv
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             nodejs_22
-            pnpm
+            corepack_22
+            git
           ];
+
+          shellHook = ''
+            echo "domainarr dev environment"
+            echo "node: $(node --version)"
+            echo "pnpm: $(pnpm --version 2>/dev/null || echo 'run: corepack enable pnpm')"
+          '';
         };
       }
     );
