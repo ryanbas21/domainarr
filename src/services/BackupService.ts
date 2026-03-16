@@ -3,7 +3,7 @@ import { FileSystem, Path } from "@effect/platform"
 import { AppConfig } from "../config/AppConfig.js"
 import { PiholeClient } from "./PiholeClient.js"
 import { DnsProvider, type DnsProviderErrors } from "./DnsProvider.js"
-import { DnsBackup, DnsRecord } from "../domain/DnsRecord.js"
+import { DnsBackup, DnsRecord, type Domain } from "../domain/DnsRecord.js"
 import {
   BackupWriteError,
   BackupReadError,
@@ -159,6 +159,33 @@ export class BackupService extends Context.Tag("@domainarr/BackupService")<
             })
           )
         )
+
+        // Clear existing records before restoring (true restore)
+        yield* Effect.logInfo("Clearing existing records before restore...").pipe(
+          Effect.annotateLogs({ service: "backup", operation: "restore" })
+        )
+
+        const existingPiholeRecords = yield* pihole.list().pipe(
+          Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<DnsRecord>))
+        )
+        yield* Effect.forEach(
+          existingPiholeRecords,
+          (record) => pihole.remove(record).pipe(Effect.catchAll(() => Effect.void)),
+          { concurrency: 1 }
+        )
+
+        const existingDnsProviderRecords = yield* dnsProvider.list().pipe(
+          Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<{ domain: string }>))
+        )
+        yield* Effect.forEach(
+          existingDnsProviderRecords,
+          (record) => dnsProvider.remove(record.domain as Domain).pipe(Effect.catchAll(() => Effect.void)),
+          { concurrency: 5 }
+        )
+
+        yield* Effect.logInfo(
+          `Cleared ${existingPiholeRecords.length} Pi-hole and ${existingDnsProviderRecords.length} DNS provider records`
+        ).pipe(Effect.annotateLogs({ service: "backup", operation: "restore" }))
 
         // Restore to Pi-hole using Effect.forEach
         yield* Effect.logInfo(`Restoring ${backupData.pihole.length} records to Pi-hole...`).pipe(

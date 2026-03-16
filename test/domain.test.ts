@@ -252,7 +252,7 @@ describe("ProviderDnsRecord", () => {
 describe("DnsBackup", () => {
   it.effect("creates an empty backup", () =>
     Effect.gen(function* () {
-      const backup = DnsBackup.empty
+      const backup = DnsBackup.empty()
 
       expect(backup.version).toBe(1)
       expect(backup.pihole).toEqual([])

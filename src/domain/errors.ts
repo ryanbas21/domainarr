@@ -46,6 +46,14 @@ export class ConfigParseError extends Schema.TaggedError<ConfigParseError>()(
   }
 ) {}
 
+export class ConfigReadError extends Schema.TaggedError<ConfigReadError>()(
+  "ConfigReadError",
+  {
+    path: Schema.String,
+    message: Schema.String
+  }
+) {}
+
 export class ConfigWriteError extends Schema.TaggedError<ConfigWriteError>()(
   "ConfigWriteError",
   {
@@ -54,7 +62,7 @@ export class ConfigWriteError extends Schema.TaggedError<ConfigWriteError>()(
   }
 ) {}
 
-export const ConfigError = Schema.Union(ConfigNotFoundError, ConfigParseError, ConfigWriteError)
+export const ConfigError = Schema.Union(ConfigNotFoundError, ConfigParseError, ConfigReadError, ConfigWriteError)
 export type ConfigError = typeof ConfigError.Type
 
 // Backup errors

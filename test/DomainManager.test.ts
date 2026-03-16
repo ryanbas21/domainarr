@@ -111,6 +111,43 @@ describe("DomainManager.list", () => {
     })
   )
 
+  it.effect("tracks IP divergence between providers", () =>
+    Effect.gen(function* () {
+      const piholeLayer = makeMockPiholeClient({
+        records: [
+          makeTestRecord("same-ip.example.com", "192.168.1.1"),
+          makeTestRecord("diff-ip.example.com", "192.168.1.2")
+        ]
+      })
+
+      const dnsProviderLayer = makeMockDnsProvider({
+        records: [
+          makeTestProviderRecord("same-ip.example.com", "192.168.1.1", "cf-1"),
+          makeTestProviderRecord("diff-ip.example.com", "10.0.0.99", "cf-2")
+        ]
+      })
+
+      const testLayer = Layer.provideMerge(
+        DomainManager.layer,
+        Layer.merge(piholeLayer, dnsProviderLayer)
+      )
+
+      const manager = yield* DomainManager.pipe(Effect.provide(testLayer))
+      const records = yield* manager.list()
+
+      const sameIp = records.find((r) => r.domain === "same-ip.example.com")
+      const diffIp = records.find((r) => r.domain === "diff-ip.example.com")
+
+      // Same IP: no divergence
+      expect(sameIp?.dnsProviderIp).toBeUndefined()
+      expect(sameIp?.ip).toBe("192.168.1.1")
+
+      // Different IP: dnsProviderIp populated with the DNS provider's IP
+      expect(diffIp?.dnsProviderIp).toBe("10.0.0.99")
+      expect(diffIp?.ip).toBe("192.168.1.2") // Pi-hole IP preserved
+    })
+  )
+
   it.effect("propagates Pi-hole errors", () =>
     Effect.gen(function* () {
       const piholeLayer = makeMockPiholeClient({
@@ -163,7 +200,7 @@ describe("DomainManager.add", () => {
   it.effect("adds to both providers successfully", () =>
     Effect.gen(function* () {
       const addedToPihole: DnsRecord[] = []
-      const addedToProvider: DnsRecord[] = []
+      const upsertedToProvider: DnsRecord[] = []
 
       const piholeLayer = makeMockPiholeClient({
         records: [],
@@ -172,7 +209,7 @@ describe("DomainManager.add", () => {
 
       const dnsProviderLayer = makeMockDnsProvider({
         records: [],
-        onAdd: (r) => addedToProvider.push(r)
+        onUpsert: (r) => upsertedToProvider.push(r)
       })
 
       const testLayer = Layer.provideMerge(
@@ -191,7 +228,7 @@ describe("DomainManager.add", () => {
       expect(result.dnsProviderError).toBeUndefined()
 
       expect(addedToPihole).toHaveLength(1)
-      expect(addedToProvider).toHaveLength(1)
+      expect(upsertedToProvider).toHaveLength(1)
     })
   )
 
@@ -271,6 +308,64 @@ describe("DomainManager.add", () => {
       expect(result.dnsProvider).toBe("failed")
       expect(result.piholeError).toBeDefined()
       expect(result.dnsProviderError).toBeDefined()
+    })
+  )
+
+  it.effect("updates existing Pi-hole record when IP changes", () =>
+    Effect.gen(function* () {
+      const removedFromPihole: DnsRecord[] = []
+      const addedToPihole: DnsRecord[] = []
+
+      const piholeLayer = makeMockPiholeClient({
+        records: [makeTestRecord("existing.example.com", "192.168.1.1")],
+        onRemove: (r) => removedFromPihole.push(r),
+        onAdd: (r) => addedToPihole.push(r)
+      })
+
+      const dnsProviderLayer = makeMockDnsProvider({ records: [] })
+
+      const testLayer = Layer.provideMerge(
+        DomainManager.layer,
+        Layer.merge(piholeLayer, dnsProviderLayer)
+      )
+
+      const manager = yield* DomainManager.pipe(Effect.provide(testLayer))
+      // Add same domain with different IP
+      const record = makeTestRecord("existing.example.com", "10.0.0.1")
+      const result = yield* manager.add(record)
+
+      expect(result.pihole).toBe("success")
+      // Should have removed old record and added new one
+      expect(removedFromPihole).toHaveLength(1)
+      expect(removedFromPihole[0].ip).toBe("192.168.1.1")
+      expect(addedToPihole).toHaveLength(1)
+      expect(addedToPihole[0].ip).toBe("10.0.0.1")
+    })
+  )
+
+  it.effect("skips Pi-hole add when record already exists with same IP", () =>
+    Effect.gen(function* () {
+      const addedToPihole: DnsRecord[] = []
+
+      const piholeLayer = makeMockPiholeClient({
+        records: [makeTestRecord("existing.example.com", "192.168.1.1")],
+        onAdd: (r) => addedToPihole.push(r)
+      })
+
+      const dnsProviderLayer = makeMockDnsProvider({ records: [] })
+
+      const testLayer = Layer.provideMerge(
+        DomainManager.layer,
+        Layer.merge(piholeLayer, dnsProviderLayer)
+      )
+
+      const manager = yield* DomainManager.pipe(Effect.provide(testLayer))
+      const record = makeTestRecord("existing.example.com", "192.168.1.1")
+      const result = yield* manager.add(record)
+
+      expect(result.pihole).toBe("success")
+      // Should NOT have added (already exists)
+      expect(addedToPihole).toHaveLength(0)
     })
   )
 })
@@ -483,6 +578,48 @@ describe("DomainManager.sync", () => {
       const results = yield* manager.sync()
 
       expect(results).toEqual([])
+    })
+  )
+
+  it.effect("removes stale DNS provider records not in Pi-hole", () =>
+    Effect.gen(function* () {
+      const removedDomains: Domain[] = []
+
+      const piholeLayer = makeMockPiholeClient({
+        records: [
+          makeTestRecord("shared.example.com", "192.168.1.1")
+        ]
+      })
+
+      const dnsProviderLayer = makeMockDnsProvider({
+        records: [
+          makeTestProviderRecord("shared.example.com", "192.168.1.1", "cf-1"),
+          makeTestProviderRecord("stale.example.com", "192.168.1.99", "cf-2")
+        ],
+        onRemove: (d) => removedDomains.push(d)
+      })
+
+      const testLayer = Layer.provideMerge(
+        DomainManager.layer,
+        Layer.merge(piholeLayer, dnsProviderLayer)
+      )
+
+      const manager = yield* DomainManager.pipe(Effect.provide(testLayer))
+      const results = yield* manager.sync()
+
+      // Should have 2 results: 1 upsert + 1 removal
+      expect(results).toHaveLength(2)
+
+      const upsertResult = results.find((r) => r.domain === "shared.example.com")
+      expect(upsertResult?.pihole).toBe("success")
+      expect(upsertResult?.dnsProvider).toBe("success")
+
+      const removeResult = results.find((r) => r.domain === "stale.example.com")
+      expect(removeResult?.pihole).toBe("skipped")
+      expect(removeResult?.dnsProvider).toBe("success")
+
+      expect(removedDomains).toHaveLength(1)
+      expect(removedDomains[0]).toBe("stale.example.com")
     })
   )
 })

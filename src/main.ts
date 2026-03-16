@@ -144,17 +144,22 @@ if (isInitCommand) {
       Effect.catchTag("ConfigNotFoundError", () =>
         Console.error(
           "Error: Configuration not found.\n\nRun 'domainarr init' to set up your configuration."
-        )
+        ).pipe(Effect.andThen(Effect.sync(() => { process.exitCode = 1 })))
+      ),
+      Effect.catchTag("ConfigReadError", (e) =>
+        Console.error(
+          `Error: Failed to read configuration.\n\n${e.message}`
+        ).pipe(Effect.andThen(Effect.sync(() => { process.exitCode = 1 })))
       ),
       Effect.catchTag("ConfigParseError", (e) =>
         Console.error(
           `Error: Invalid configuration file.\n\n${e.message}\n\nRun 'domainarr init' to reconfigure.`
-        )
+        ).pipe(Effect.andThen(Effect.sync(() => { process.exitCode = 1 })))
       ),
       Effect.catchTag("ConfigWriteError", (e) =>
         Console.error(
           `Error: Failed to write configuration.\n\n${e.message}`
-        )
+        ).pipe(Effect.andThen(Effect.sync(() => { process.exitCode = 1 })))
       ),
       NodeRuntime.runMain()
     )

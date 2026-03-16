@@ -1,6 +1,6 @@
 import { Context, Effect, Either, Layer, Schema } from "effect"
 import { PiholeClient } from "./PiholeClient.js"
-import { DnsProvider, type DnsProviderErrors } from "./DnsProvider.js"
+import { DnsProvider, type ProviderDnsRecord, type DnsProviderErrors } from "./DnsProvider.js"
 import { DnsRecord, type Domain } from "../domain/DnsRecord.js"
 import type { PiholeError } from "../domain/errors.js"
 
@@ -10,7 +10,8 @@ export class ManagedDnsRecord extends Schema.Class<ManagedDnsRecord>("ManagedDns
   ip: Schema.String,
   inPihole: Schema.Boolean,
   inDnsProvider: Schema.Boolean,
-  dnsRecordId: Schema.optional(Schema.String)
+  dnsRecordId: Schema.optional(Schema.String),
+  dnsProviderIp: Schema.optional(Schema.String)
 }) {}
 
 // Result type for operations that touch both providers
@@ -69,7 +70,8 @@ export class DomainManager extends Context.Tag("@domainarr/DomainManager")<
               ManagedDnsRecord.make({
                 ...existing,
                 inDnsProvider: true,
-                dnsRecordId: record.recordId
+                dnsRecordId: record.recordId,
+                ...(existing.ip !== record.ip ? { dnsProviderIp: record.ip } : {})
               })
             )
           } else {
@@ -93,16 +95,32 @@ export class DomainManager extends Context.Tag("@domainarr/DomainManager")<
 
       // Add to both providers (best effort - reports individual failures)
       const add = Effect.fn("DomainManager.add")(function* (record: DnsRecord) {
-        // Add to Pi-hole
-        const piholeResult = yield* pihole.add(record).pipe(
-          Effect.map(() => ({ success: true as const })),
+        // Add to Pi-hole (handle duplicates: if domain exists with different IP, update it)
+        const piholeResult = yield* Effect.gen(function* () {
+          const existingRecords = yield* pihole.list().pipe(
+            Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<DnsRecord>))
+          )
+          const existing = existingRecords.find((r) => r.domain === record.domain)
+
+          if (existing) {
+            if (existing.ip === record.ip) {
+              // Already exists with same IP — skip
+              return { success: true as const }
+            }
+            // Different IP — remove old, then add new
+            yield* pihole.remove(existing)
+          }
+
+          yield* pihole.add(record)
+          return { success: true as const }
+        }).pipe(
           Effect.catchAll((e) =>
             Effect.succeed({ success: false as const, error: e.message })
           )
         )
 
-        // Add to DNS provider
-        const dnsProviderResult = yield* dnsProvider.add(record).pipe(
+        // Upsert to DNS provider (handles exists-check internally)
+        const dnsProviderResult = yield* dnsProvider.upsert(record).pipe(
           Effect.map(() => ({ success: true as const })),
           Effect.catchAll((e) =>
             Effect.succeed({ success: false as const, error: e.message })
@@ -178,6 +196,9 @@ export class DomainManager extends Context.Tag("@domainarr/DomainManager")<
 
         const results: SyncResult[] = []
 
+        // Upsert all Pi-hole records to DNS provider
+        const piholeDomains = new Set(piholeRecords.map((r) => r.domain))
+
         for (const record of piholeRecords) {
           const dnsProviderResult = yield* dnsProvider.upsert(record).pipe(
             Effect.map(() => ({ success: true as const })),
@@ -193,6 +214,29 @@ export class DomainManager extends Context.Tag("@domainarr/DomainManager")<
             ...(dnsProviderResult.success ? {} : { dnsProviderError: dnsProviderResult.error })
           }
           results.push(result)
+        }
+
+        // Remove stale DNS provider records not in Pi-hole
+        const dnsProviderRecords = yield* dnsProvider.list().pipe(
+          Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<ProviderDnsRecord>))
+        )
+
+        for (const record of dnsProviderRecords) {
+          if (!piholeDomains.has(record.domain)) {
+            const removeResult = yield* dnsProvider.remove(record.domain).pipe(
+              Effect.map(() => ({ success: true as const })),
+              Effect.catchAll((e) =>
+                Effect.succeed({ success: false as const, error: e.message })
+              )
+            )
+
+            results.push({
+              domain: record.domain,
+              pihole: "skipped",
+              dnsProvider: removeResult.success ? "success" : "failed",
+              ...(removeResult.success ? {} : { dnsProviderError: removeResult.error })
+            })
+          }
         }
 
         return results
