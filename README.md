@@ -24,14 +24,62 @@ Keep your local Pi-hole DNS entries synchronized with Cloudflare DNS, enabling s
 
 ## Installation
 
+[![Packaging status](https://repology.org/badge/vertical-allrepos/domainarr.svg)](https://repology.org/project/domainarr/versions)
+
+### Quick Install (Linux/macOS)
+
 ```bash
-# Clone and build
+curl -fsSL https://raw.githubusercontent.com/ryanbas21/domainarr/main/install.sh | sh
+```
+
+### Package Managers
+
+#### npm
+
+```bash
+npm install -g domainarr
+```
+
+#### Homebrew (macOS/Linux)
+
+```bash
+brew install ryanbas21/tap/domainarr
+```
+
+#### Arch Linux (AUR)
+
+```bash
+yay -S domainarr
+# or
+paru -S domainarr
+```
+
+#### Fedora (COPR)
+
+```bash
+sudo dnf copr enable ryanbas21/domainarr
+sudo dnf install domainarr
+```
+
+### Download Binary
+
+Pre-built binaries for all platforms are available on the [releases page](https://github.com/ryanbas21/domainarr/releases).
+
+| Platform | Download |
+|----------|----------|
+| Linux x64 | [domainarr-linux-x64](https://github.com/ryanbas21/domainarr/releases/latest/download/domainarr-linux-x64) |
+| Linux arm64 | [domainarr-linux-arm64](https://github.com/ryanbas21/domainarr/releases/latest/download/domainarr-linux-arm64) |
+| macOS x64 | [domainarr-macos-x64](https://github.com/ryanbas21/domainarr/releases/latest/download/domainarr-macos-x64) |
+| macOS arm64 | [domainarr-macos-arm64](https://github.com/ryanbas21/domainarr/releases/latest/download/domainarr-macos-arm64) |
+| Windows x64 | [domainarr-win-x64.exe](https://github.com/ryanbas21/domainarr/releases/latest/download/domainarr-win-x64.exe) |
+
+### Build from Source
+
+```bash
 git clone https://github.com/ryanbas21/domainarr.git
 cd domainarr
 pnpm install
 pnpm build
-
-# Link globally (optional)
 pnpm link --global
 ```
 
