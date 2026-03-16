@@ -1,6 +1,6 @@
 {
   "name": "domainarr",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "DNS sync CLI for Pi-hole and Cloudflare",
   "type": "module",
   "bin": {
@@ -45,7 +45,8 @@
     "LICENSE"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "packageManager": "pnpm@10.12.1",
   "dependencies": {
