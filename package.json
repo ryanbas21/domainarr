@@ -1,0 +1,41 @@
+{
+  "name": "domainarr",
+  "version": "1.0.0",
+  "description": "DNS sync CLI for Pi-hole and Cloudflare",
+  "type": "module",
+  "bin": {
+    "domainarr": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "prepare": "effect-language-service patch"
+  },
+  "keywords": [
+    "dns",
+    "pihole",
+    "cloudflare",
+    "effect",
+    "cli"
+  ],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.12.1",
+  "dependencies": {
+    "@effect/cli": "^0.73.2",
+    "@effect/platform": "^0.94.5",
+    "@effect/platform-node": "^0.104.1",
+    "cloudflare": "^5.2.0",
+    "effect": "^3.19.19"
+  },
+  "devDependencies": {
+    "@effect/language-service": "^0.80.0",
+    "@effect/vitest": "^0.27.0",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}
