@@ -160,17 +160,49 @@ cat ~/.ssh/aur-ci
 git clone ssh://aur@aur.archlinux.org/domainarr.git /tmp/domainarr-aur
 cd /tmp/domainarr-aur
 
-# Copy PKGBUILD and generate .SRCINFO
-cp /path/to/domainarr/pkg/aur/PKGBUILD .
-makepkg --printsrcinfo > .SRCINFO
+# Create initial PKGBUILD (CI generates this dynamically on release)
+cat > PKGBUILD << 'EOF'
+# Maintainer: Your Name <your.email@example.com>
+pkgname=domainarr
+pkgver=0.0.1
+pkgrel=1
+pkgdesc="DNS sync CLI for Pi-hole and Cloudflare"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ryanbas21/domainarr"
+license=('ISC')
+depends=('nodejs>=20')
+makedepends=('pnpm' 'npm')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/ryanbas21/$pkgname/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
 
-# Commit and push
+build() {
+  cd "$pkgname-$pkgver"
+  pnpm install --frozen-lockfile
+  pnpm build
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -dm755 "$pkgdir/usr/lib/$pkgname"
+  cp -r dist node_modules package.json "$pkgdir/usr/lib/$pkgname/"
+  install -dm755 "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/$pkgname" << 'WRAPPER'
+#!/bin/sh
+exec node /usr/lib/domainarr/dist/main.js "$@"
+WRAPPER
+  chmod +x "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+EOF
+
+# Generate .SRCINFO and push
+makepkg --printsrcinfo > .SRCINFO
 git add PKGBUILD .SRCINFO
 git commit -m "Initial upload"
 git push
 ```
 
-After this one-time setup, CI will automatically update the AUR package on each release.
+After this one-time setup, CI will automatically update the AUR package on each release. The PKGBUILD is generated dynamically by the release workflow with the correct version and checksum.
 
 ### HOMEBREW_TAP_TOKEN
 
@@ -203,8 +235,14 @@ npm publish --access public
 ### AUR (manual)
 
 ```bash
-cd pkg/aur
-# Update pkgver and sha256sums in PKGBUILD
+# Clone your AUR package
+git clone ssh://aur@aur.archlinux.org/domainarr.git /tmp/domainarr-aur
+cd /tmp/domainarr-aur
+
+# Update pkgver in PKGBUILD, then recalculate checksum:
+# curl -sL "https://github.com/ryanbas21/domainarr/archive/refs/tags/vX.Y.Z.tar.gz" | sha256sum
+
+# Regenerate .SRCINFO and push
 makepkg --printsrcinfo > .SRCINFO
 git add PKGBUILD .SRCINFO
 git commit -m "Update to version X.Y.Z"
