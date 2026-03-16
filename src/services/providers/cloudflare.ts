@@ -5,7 +5,6 @@ import {
   DnsProvider,
   DnsProviderError,
   DnsProviderAuthError,
-  DnsProviderRecordNotFoundError,
   ProviderDnsRecord,
   type DnsProviderErrors
 } from "../DnsProvider.js"
@@ -85,8 +84,8 @@ const withRetry = <A>(effect: Effect.Effect<A, DnsProviderErrors>): Effect.Effec
   )
 
 // List all A records in the zone
-const list = (client: Cloudflare, zoneId: string) =>
-  Effect.gen(function* () {
+const list = Effect.fn("CloudflareProvider.list")(
+  function* (client: Cloudflare, zoneId: string) {
     const rawRecords = yield* withTimeout(withRetry(Effect.tryPromise({
       try: async () => {
         const result: Array<{ name: string; content: string; id: string }> = []
@@ -118,7 +117,8 @@ const list = (client: Cloudflare, zoneId: string) =>
     )
 
     return records.filter((r): r is ProviderDnsRecord => r !== null)
-  }).pipe(Effect.withSpan("CloudflareProvider.list"))
+  }
+)
 
 // Find a specific record by domain
 const find = (client: Cloudflare, zoneId: string) => (domain: Domain) =>
@@ -193,7 +193,7 @@ const add = (client: Cloudflare, zoneId: string) => (record: DnsRecord) =>
     return result
   }).pipe(Effect.withSpan("CloudflareProvider.add"))
 
-// Remove a record by domain
+// Remove a record by domain (idempotent - succeeds if record doesn't exist)
 const remove = (client: Cloudflare, zoneId: string, findFn: (domain: Domain) => Effect.Effect<Option.Option<ProviderDnsRecord>, DnsProviderErrors>) =>
   (domain: Domain) =>
     Effect.gen(function* () {
@@ -203,10 +203,11 @@ const remove = (client: Cloudflare, zoneId: string, findFn: (domain: Domain) => 
 
       const existing = yield* findFn(domain)
       if (Option.isNone(existing)) {
-        return yield* new DnsProviderRecordNotFoundError({
-          provider: PROVIDER_NAME,
-          domain
-        })
+        // Idempotent: record already doesn't exist, nothing to do
+        yield* Effect.logDebug(`${domain} not found, nothing to remove`).pipe(
+          Effect.annotateLogs({ service: "cloudflare", operation: "remove", domain })
+        )
+        return
       }
 
       yield* withTimeout(withRetry(Effect.tryPromise({

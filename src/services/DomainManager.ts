@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Either, Layer, Schema } from "effect"
 import { PiholeClient } from "./PiholeClient.js"
 import { DnsProvider, type DnsProviderErrors } from "./DnsProvider.js"
 import { DnsRecord, type Domain } from "../domain/DnsRecord.js"
@@ -124,16 +124,27 @@ export class DomainManager extends Context.Tag("@domainarr/DomainManager")<
       // Remove from both providers
       const remove = Effect.fn("DomainManager.remove")(function* (domain: Domain) {
         // First, get the current record from Pi-hole to get the IP
-        const piholeRecords = yield* pihole.list().pipe(
-          Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<DnsRecord>))
-        )
+        const piholeListResult = yield* pihole.list().pipe(Effect.either)
+
+        // Log if we failed to list Pi-hole records
+        if (Either.isLeft(piholeListResult)) {
+          yield* Effect.logWarning(`Failed to fetch Pi-hole records: ${piholeListResult.left.message}`).pipe(
+            Effect.annotateLogs({ service: "domain-manager", operation: "remove", domain })
+          )
+        }
+
+        const piholeRecords = Either.isRight(piholeListResult) ? piholeListResult.right : []
         const piholeRecord = piholeRecords.find((r) => r.domain === domain)
 
         // Remove from Pi-hole
         let piholeStatus: "success" | "failed" | "skipped" = "skipped"
         let piholeError: string | undefined
 
-        if (piholeRecord) {
+        // If list failed, we can't remove from Pi-hole - mark as failed with the list error
+        if (Either.isLeft(piholeListResult)) {
+          piholeStatus = "failed"
+          piholeError = `Could not verify record exists: ${piholeListResult.left.message}`
+        } else if (piholeRecord) {
           const result = yield* pihole.remove(piholeRecord).pipe(
             Effect.map(() => ({ success: true as const })),
             Effect.catchAll((e) =>

@@ -1,6 +1,5 @@
 import { Context, Effect, Layer, Schema } from "effect"
-import { FileSystem } from "@effect/platform"
-import * as Path from "node:path"
+import { FileSystem, Path } from "@effect/platform"
 import { AppConfig } from "../config/AppConfig.js"
 import { PiholeClient } from "./PiholeClient.js"
 import { DnsProvider, type DnsProviderErrors } from "./DnsProvider.js"
@@ -36,6 +35,7 @@ export class BackupService extends Context.Tag("@domainarr/BackupService")<
     Effect.gen(function* () {
       const config = yield* AppConfig
       const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
       const pihole = yield* PiholeClient
       const dnsProvider = yield* DnsProvider
 
@@ -76,7 +76,7 @@ export class BackupService extends Context.Tag("@domainarr/BackupService")<
 
         // Write backup file
         const filename = generateFilename()
-        const filepath = Path.join(backupDir, filename)
+        const filepath = path.join(backupDir, filename)
 
         const json = yield* Schema.encode(DnsBackup.Json)(backupData).pipe(
           Effect.mapError((e) =>
@@ -132,9 +132,9 @@ export class BackupService extends Context.Tag("@domainarr/BackupService")<
       // Restore from a backup
       const restore = Effect.fn("BackupService.restore")(function* (backupFile: string) {
         // Resolve path (support both filename and full path)
-        const filepath = Path.isAbsolute(backupFile)
+        const filepath = path.isAbsolute(backupFile)
           ? backupFile
-          : Path.join(backupDir, backupFile)
+          : path.join(backupDir, backupFile)
 
         yield* Effect.logInfo(`Restoring from backup: ${filepath}`).pipe(
           Effect.annotateLogs({ service: "backup", operation: "restore" })

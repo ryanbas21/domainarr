@@ -11,10 +11,13 @@ This project uses Effect TypeScript with a service-oriented architecture:
 - `errors.ts` - TaggedError types for type-safe error handling
 
 ### Services (`src/services/`)
-- `PiholeClient.ts` - Pi-hole v6 REST API client (session-based auth)
-- `CloudflareClient.ts` - Cloudflare API using official SDK
-- `DomainManager.ts` - Orchestration service (coordinates Pi-hole + Cloudflare)
+- `PiholeClient.ts` - Pi-hole v6 REST API client (session-based auth with Ref state)
+- `DnsProvider.ts` - Abstract DNS provider interface
+- `providers/cloudflare.ts` - Cloudflare implementation using official SDK
+- `providers/porkbun.ts` - Porkbun implementation (stub)
+- `DomainManager.ts` - Orchestration service (coordinates Pi-hole + DNS provider)
 - `BackupService.ts` - Backup/restore to filesystem
+- `Logger.ts` - CLI-friendly logger with colored output
 
 ### Configuration (`src/config/`)
 - `AppConfig.ts` - Configuration service loading from `~/.config/domainarr/config.json`
@@ -31,7 +34,7 @@ NodeContext + NodeHttpClient (Platform)
         ↓
     AppConfig (needs FileSystem)
         ↓
-PiholeClient + CloudflareClient (need Config + Http)
+PiholeClient + DnsProvider (need Config + Http)
         ↓
 DomainManager + BackupService (need Clients)
 ```
@@ -41,7 +44,7 @@ DomainManager + BackupService (need Clients)
 - `domainarr add <domain> <ip>` - Add DNS record to both providers
 - `domainarr remove <domain>` - Remove from both providers
 - `domainarr list` - List all records with sync status
-- `domainarr sync` - Sync Pi-hole → Cloudflare (Pi-hole is source of truth)
+- `domainarr sync` - Sync Pi-hole → DNS provider (Pi-hole is source of truth)
 - `domainarr backup` - Create backup to configured path
 - `domainarr restore [file]` - Restore from backup
 - `domainarr init` - Interactive setup wizard
@@ -60,9 +63,12 @@ pnpm typecheck  # Type check without emit
 - `Schema.Class` for domain models with validation
 - `Schema.TaggedError` for typed errors
 - `Effect.fn` for call-site tracing (shows in error traces)
-- `Layer.effect` for service construction
+- `Layer.effect` / `Layer.scoped` for service construction
 - `Layer.provide` / `Layer.merge` for dependency wiring
 - `Effect.catchTag` for pattern matching on errors
+- `Effect.acquireRelease` for resource lifecycle management
+- `Ref` for fiber-safe mutable state (session management)
+- `Schedule.exponential` with `Schedule.jittered` for retry with backoff
 
 ## Configuration
 
@@ -73,7 +79,8 @@ Config is stored at `~/.config/domainarr/config.json`:
     "url": "http://pihole.local",
     "password": "your-password"
   },
-  "cloudflare": {
+  "dnsProvider": {
+    "type": "cloudflare",
     "apiToken": "your-api-token",
     "zoneId": "your-zone-id",
     "zone": "example.com"
@@ -83,6 +90,10 @@ Config is stored at `~/.config/domainarr/config.json`:
   }
 }
 ```
+
+The `dnsProvider` field supports multiple provider types via discriminated union:
+- `type: "cloudflare"` - Cloudflare DNS
+- `type: "porkbun"` - Porkbun DNS (not yet implemented)
 
 ## Pi-hole v6 API
 

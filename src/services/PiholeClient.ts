@@ -74,15 +74,6 @@ export class PiholeClient extends Context.Tag("@domainarr/PiholeClient")<
       // Session state using Ref for fiber-safe state management
       const sessionRef = yield* Ref.make<Option.Option<PiholeSession>>(Option.none())
 
-      // Helper to wrap HTTP calls with timeout
-      const withTimeout = <A, E>(effect: Effect.Effect<A, E>, errorFactory: (msg: string) => PiholeError) =>
-        effect.pipe(
-          Effect.timeout(HTTP_TIMEOUT),
-          Effect.catchTag("TimeoutException", () =>
-            Effect.fail(errorFactory(`Request timed out after ${Duration.toSeconds(HTTP_TIMEOUT)}s`))
-          )
-        )
-
       // Authenticate and get session
       const authenticate = (): Effect.Effect<void, PiholeError> =>
         Effect.gen(function* () {
@@ -99,14 +90,17 @@ export class PiholeClient extends Context.Tag("@domainarr/PiholeClient")<
             )
           )
 
-          const response = yield* withTimeout(
-            http.execute(request),
-            (msg) => new PiholeConnectionError({ message: msg, url: baseUrl })
-          ).pipe(
+          const response = yield* http.execute(request).pipe(
+            Effect.timeout(HTTP_TIMEOUT),
+            Effect.catchTag("TimeoutException", () =>
+              Effect.fail(new PiholeConnectionError({
+                message: `Request timed out after ${Duration.toSeconds(HTTP_TIMEOUT)}s`,
+                url: baseUrl
+              }))
+            ),
             Effect.mapError((e) =>
-              e._tag === "PiholeConnectionError" ? e :
               new PiholeConnectionError({
-                message: `Connection failed: ${(e as Error).message}`,
+                message: `Connection failed: ${e instanceof Error ? e.message : String(e)}`,
                 url: baseUrl
               })
             )
@@ -161,13 +155,19 @@ export class PiholeClient extends Context.Tag("@domainarr/PiholeClient")<
             HttpClientRequest.setHeader("Cookie", `sid=${session.sid}`)
           )
 
-          const response = yield* withTimeout(
-            http.execute(request),
-            (msg) => new PiholeConnectionError({ message: msg, url: baseUrl })
-          ).pipe(
+          const response = yield* http.execute(request).pipe(
+            Effect.timeout(HTTP_TIMEOUT),
+            Effect.catchTag("TimeoutException", () =>
+              Effect.fail(new PiholeConnectionError({
+                message: `Request timed out after ${Duration.toSeconds(HTTP_TIMEOUT)}s`,
+                url: baseUrl
+              }))
+            ),
             Effect.mapError((e) =>
-              e._tag === "PiholeConnectionError" ? e :
-              new PiholeApiError({ message: `Request failed: ${(e as Error).message}` })
+              new PiholeConnectionError({
+                message: `Request failed: ${e instanceof Error ? e.message : String(e)}`,
+                url: baseUrl
+              })
             )
           )
 
@@ -226,17 +226,15 @@ export class PiholeClient extends Context.Tag("@domainarr/PiholeClient")<
             schedule: retrySchedule,
             while: isRetryable
           }),
-          Effect.catchAll((e) =>
-            Effect.fail(
-              new PiholeApiError({
-                message: `Operation failed after ${RETRY_CONFIG.maxAttempts} attempts: ${e.message}`
-              })
-            )
+          Effect.mapError((e) =>
+            new PiholeApiError({
+              message: `Operation failed after ${RETRY_CONFIG.maxAttempts} attempts: ${e.message}`
+            })
           )
         )
 
-      // Add a DNS record
-      const add = (record: DnsRecord): Effect.Effect<void, PiholeError> =>
+      // Internal add implementation (handles single attempt)
+      const addInternal = (record: DnsRecord): Effect.Effect<void, PiholeError> =>
         Effect.gen(function* () {
           const session = yield* ensureSession()
           yield* Effect.logInfo(`Adding ${record.domain} → ${record.ip}`).pipe(
@@ -249,15 +247,28 @@ export class PiholeClient extends Context.Tag("@domainarr/PiholeClient")<
             HttpClientRequest.setHeader("Cookie", `sid=${session.sid}`)
           )
 
-          const response = yield* withTimeout(
-            http.execute(request),
-            (msg) => new PiholeConnectionError({ message: msg, url: baseUrl })
-          ).pipe(
+          const response = yield* http.execute(request).pipe(
+            Effect.timeout(HTTP_TIMEOUT),
+            Effect.catchTag("TimeoutException", () =>
+              Effect.fail(new PiholeConnectionError({
+                message: `Request timed out after ${Duration.toSeconds(HTTP_TIMEOUT)}s`,
+                url: baseUrl
+              }))
+            ),
             Effect.mapError((e) =>
-              e._tag === "PiholeConnectionError" ? e :
-              new PiholeApiError({ message: `Add failed: ${(e as Error).message}` })
+              new PiholeConnectionError({
+                message: `Add failed: ${e instanceof Error ? e.message : String(e)}`,
+                url: baseUrl
+              })
             )
           )
+
+          if (response.status === 401) {
+            yield* clearSession()
+            return yield* new PiholeAuthError({
+              message: "Session expired, re-authentication required"
+            })
+          }
 
           if (response.status >= 400) {
             return yield* new PiholeApiError({
@@ -271,8 +282,17 @@ export class PiholeClient extends Context.Tag("@domainarr/PiholeClient")<
           )
         })
 
-      // Remove a DNS record
-      const remove = (record: DnsRecord): Effect.Effect<void, PiholeError> =>
+      // Add a DNS record with retry on transient errors
+      const add = (record: DnsRecord): Effect.Effect<void, PiholeError> =>
+        addInternal(record).pipe(
+          Effect.retry({
+            schedule: retrySchedule,
+            while: isRetryable
+          })
+        )
+
+      // Internal remove implementation (handles single attempt)
+      const removeInternal = (record: DnsRecord): Effect.Effect<void, PiholeError> =>
         Effect.gen(function* () {
           const session = yield* ensureSession()
           yield* Effect.logInfo(`Removing ${record.domain}`).pipe(
@@ -285,15 +305,28 @@ export class PiholeClient extends Context.Tag("@domainarr/PiholeClient")<
             HttpClientRequest.setHeader("Cookie", `sid=${session.sid}`)
           )
 
-          const response = yield* withTimeout(
-            http.execute(request),
-            (msg) => new PiholeConnectionError({ message: msg, url: baseUrl })
-          ).pipe(
+          const response = yield* http.execute(request).pipe(
+            Effect.timeout(HTTP_TIMEOUT),
+            Effect.catchTag("TimeoutException", () =>
+              Effect.fail(new PiholeConnectionError({
+                message: `Request timed out after ${Duration.toSeconds(HTTP_TIMEOUT)}s`,
+                url: baseUrl
+              }))
+            ),
             Effect.mapError((e) =>
-              e._tag === "PiholeConnectionError" ? e :
-              new PiholeApiError({ message: `Remove failed: ${(e as Error).message}` })
+              new PiholeConnectionError({
+                message: `Remove failed: ${e instanceof Error ? e.message : String(e)}`,
+                url: baseUrl
+              })
             )
           )
+
+          if (response.status === 401) {
+            yield* clearSession()
+            return yield* new PiholeAuthError({
+              message: "Session expired, re-authentication required"
+            })
+          }
 
           if (response.status >= 400) {
             return yield* new PiholeApiError({
@@ -306,6 +339,15 @@ export class PiholeClient extends Context.Tag("@domainarr/PiholeClient")<
             Effect.annotateLogs({ service: "pihole", operation: "remove", domain: record.domain })
           )
         })
+
+      // Remove a DNS record with retry on transient errors
+      const remove = (record: DnsRecord): Effect.Effect<void, PiholeError> =>
+        removeInternal(record).pipe(
+          Effect.retry({
+            schedule: retrySchedule,
+            while: isRetryable
+          })
+        )
 
       return PiholeClient.of({ list, add, remove })
     })
