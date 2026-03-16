@@ -141,17 +141,36 @@ brew install domainarr
 ### AUR_SSH_PRIVATE_KEY
 
 ```bash
-# Generate dedicated key for AUR
-ssh-keygen -t ed25519 -f ~/.ssh/aur -C "aur@github-actions"
+# Generate dedicated key for AUR CI (no passphrase)
+ssh-keygen -t ed25519 -f ~/.ssh/aur-ci -C "aur-ci@github-actions" -N ""
 
 # Add public key to AUR account
-cat ~/.ssh/aur.pub
-# Copy and paste to https://aur.archlinux.org/account/your-username/edit (SSH Public Key field)
+cat ~/.ssh/aur-ci.pub
+# Copy and paste to https://aur.archlinux.org/account/ (My Account → SSH Public Key)
 
 # Add private key to GitHub secrets
-cat ~/.ssh/aur
+cat ~/.ssh/aur-ci
 # Copy and paste to GitHub secrets as AUR_SSH_PRIVATE_KEY
 ```
+
+**Important:** The AUR package must be created manually the first time before CI can update it:
+
+```bash
+# Clone empty AUR repo
+git clone ssh://aur@aur.archlinux.org/domainarr.git /tmp/domainarr-aur
+cd /tmp/domainarr-aur
+
+# Copy PKGBUILD and generate .SRCINFO
+cp /path/to/domainarr/pkg/aur/PKGBUILD .
+makepkg --printsrcinfo > .SRCINFO
+
+# Commit and push
+git add PKGBUILD .SRCINFO
+git commit -m "Initial upload"
+git push
+```
+
+After this one-time setup, CI will automatically update the AUR package on each release.
 
 ### HOMEBREW_TAP_TOKEN
 
