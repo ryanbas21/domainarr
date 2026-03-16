@@ -6,30 +6,27 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  NODE_VERSION: '22'
-
 jobs:
   ci:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Primary: full build + typecheck + test
-          - os: ubuntu-latest
-            node: '22'
-            full: true
-          # OS compat: just test (build is platform-independent)
-          - os: macos-latest
-            node: '22'
-            full: false
-          - os: windows-latest
-            node: '22'
-            full: false
-          # Node compat
-          - os: ubuntu-latest
+        os: [ubuntu-latest, ubuntu-22.04, macos-latest, windows-latest]
+        node: ['20', '22', '24']
+        exclude:
+          # Reduce matrix size: only test all Node versions on ubuntu-latest
+          - os: ubuntu-22.04
             node: '20'
-            full: false
+          - os: ubuntu-22.04
+            node: '24'
+          - os: macos-latest
+            node: '20'
+          - os: macos-latest
+            node: '24'
+          - os: windows-latest
+            node: '20'
+          - os: windows-latest
+            node: '24'
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -46,7 +43,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Type check
-        if: matrix.full
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
         run: pnpm typecheck
 
       - name: Build
