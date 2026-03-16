@@ -54,6 +54,18 @@ yay -S domainarr
 paru -S domainarr
 ```
 
+#### Nix
+
+```bash
+# Run directly
+nix run github:ryanbas21/domainarr
+
+# Install to profile
+nix profile install github:ryanbas21/domainarr
+
+# Or add to your flake inputs
+```
+
 #### Fedora (COPR)
 
 ```bash

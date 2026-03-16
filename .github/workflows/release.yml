@@ -347,3 +347,51 @@ jobs:
           user_email: '${{ github.repository_owner }}@users.noreply.github.com'
           user_name: '${{ github.repository_owner }}'
           commit_message: 'Update domainarr to ${{ steps.info.outputs.version }}'
+
+  # Update Nix flake hashes
+  update-flake:
+    needs: [release, create-github-release]
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Get version and calculate hashes
+        id: hashes
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Download binaries and calculate SRI hashes
+          for binary in linux-x64 linux-arm64 macos-x64 macos-arm64; do
+            curl -sL "https://github.com/${REPO}/releases/download/v${VERSION}/domainarr-${binary}" -o "domainarr-${binary}"
+            HASH=$(sha256sum "domainarr-${binary}" | cut -d' ' -f1)
+            SRI="sha256-$(echo "$HASH" | xxd -r -p | base64 -w0)"
+            echo "${binary//-/_}=$SRI" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Update flake.nix
+        env:
+          VERSION: ${{ steps.hashes.outputs.version }}
+          HASH_LINUX_X64: ${{ steps.hashes.outputs.linux_x64 }}
+          HASH_LINUX_ARM64: ${{ steps.hashes.outputs.linux_arm64 }}
+          HASH_MACOS_X64: ${{ steps.hashes.outputs.macos_x64 }}
+          HASH_MACOS_ARM64: ${{ steps.hashes.outputs.macos_arm64 }}
+        run: |
+          sed -i "s/version = \"[^\"]*\"/version = \"$VERSION\"/" flake.nix
+          sed -i "s|\"x86_64-linux\" = \"sha256-[^\"]*\"|\"x86_64-linux\" = \"$HASH_LINUX_X64\"|" flake.nix
+          sed -i "s|\"aarch64-linux\" = \"sha256-[^\"]*\"|\"aarch64-linux\" = \"$HASH_LINUX_ARM64\"|" flake.nix
+          sed -i "s|\"x86_64-darwin\" = \"sha256-[^\"]*\"|\"x86_64-darwin\" = \"$HASH_MACOS_X64\"|" flake.nix
+          sed -i "s|\"aarch64-darwin\" = \"sha256-[^\"]*\"|\"aarch64-darwin\" = \"$HASH_MACOS_ARM64\"|" flake.nix
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.nix
+          git commit -m "chore: update flake.nix for v${{ steps.hashes.outputs.version }}" || exit 0
+          git push
