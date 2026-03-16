@@ -1,6 +1,6 @@
 # Maintainer: Your Name <your.email@example.com>
 pkgname=domainarr
-pkgver=1.0.0
+pkgver=0.0.1
 pkgrel=1
 pkgdesc="DNS sync CLI for Pi-hole and Cloudflare"
 arch=('x86_64' 'aarch64')
