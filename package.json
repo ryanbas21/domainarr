@@ -1,6 +1,6 @@
 {
   "name": "domainarr",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "description": "DNS sync CLI for Pi-hole and Cloudflare",
   "type": "module",
   "bin": {
@@ -11,17 +11,42 @@
     "dev": "tsx src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "prepare": "effect-language-service patch"
+    "prepare": "effect-language-service patch",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "pnpm build && changeset publish"
   },
   "keywords": [
     "dns",
     "pihole",
+    "pi-hole",
     "cloudflare",
     "effect",
-    "cli"
+    "cli",
+    "sync",
+    "local-dns"
   ],
   "author": "",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ryanbas21/domainarr.git"
+  },
+  "homepage": "https://github.com/ryanbas21/domainarr#readme",
+  "bugs": {
+    "url": "https://github.com/ryanbas21/domainarr/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "packageManager": "pnpm@10.12.1",
   "dependencies": {
     "@effect/cli": "^0.73.2",
@@ -31,6 +56,8 @@
     "effect": "^3.19.19"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.6.0",
+    "@changesets/cli": "^2.30.0",
     "@effect/language-service": "^0.80.0",
     "@effect/vitest": "^0.27.0",
     "@types/node": "^25.5.0",

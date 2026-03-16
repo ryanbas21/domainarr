@@ -1,0 +1,351 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: write
+  packages: write
+  pull-requests: write
+  id-token: write
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '10'
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.changesets.outputs.published }}
+      publishedPackages: ${{ steps.changesets.outputs.publishedPackages }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Create Release Pull Request or Publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          title: 'chore: version packages'
+          commit: 'chore: version packages'
+          publish: pnpm release
+          version: pnpm version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Publish to GitHub Packages after npm publish
+  publish-github-packages:
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@${{ github.repository_owner }}'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Configure package for GitHub Packages
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          jq --arg owner "$REPO_OWNER" '.name = "@" + $owner + "/domainarr"' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Publish to GitHub Packages
+        run: pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build standalone binaries after release
+  build-binaries:
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: node22-linux-x64
+            artifact: domainarr-linux-x64
+          - os: ubuntu-latest
+            target: node22-linux-arm64
+            artifact: domainarr-linux-arm64
+          - os: macos-latest
+            target: node22-macos-x64
+            artifact: domainarr-macos-x64
+          - os: macos-latest
+            target: node22-macos-arm64
+            artifact: domainarr-macos-arm64
+          - os: windows-latest
+            target: node22-win-x64
+            artifact: domainarr-win-x64.exe
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Install pkg
+        run: pnpm add -g @yao-pkg/pkg
+
+      - name: Build binary
+        env:
+          PKG_TARGET: ${{ matrix.target }}
+          PKG_OUTPUT: ${{ matrix.artifact }}
+        run: |
+          pkg dist/main.js \
+            --target "$PKG_TARGET" \
+            --output "$PKG_OUTPUT" \
+            --compress GZip
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  # Create GitHub Release with binaries
+  create-github-release:
+    needs: [release, build-binaries]
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from package.json
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries/
+          pattern: domainarr-*
+
+      - name: Prepare binaries and checksums
+        run: |
+          cd binaries
+          find . -type f -name 'domainarr-*' -exec mv {} . \;
+          rmdir */ 2>/dev/null || true
+          sha256sum domainarr-* > checksums.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            binaries/domainarr-*
+            binaries/checksums.sha256
+
+  # Update AUR package
+  publish-aur:
+    needs: [release, create-github-release]
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Download source and calculate checksum
+          curl -sL "https://github.com/${REPO}/archive/refs/tags/v${VERSION}.tar.gz" -o source.tar.gz
+          CHECKSUM=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+
+      - name: Generate PKGBUILD
+        env:
+          PKG_VERSION: ${{ steps.version.outputs.version }}
+          PKG_CHECKSUM: ${{ steps.version.outputs.checksum }}
+          REPO: ${{ github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          cat > PKGBUILD << EOF
+          # Maintainer: ${REPO_OWNER}
+          pkgname=domainarr
+          pkgver=${PKG_VERSION}
+          pkgrel=1
+          pkgdesc="DNS sync CLI for Pi-hole and Cloudflare"
+          arch=('x86_64' 'aarch64')
+          url="https://github.com/${REPO}"
+          license=('ISC')
+          depends=('nodejs>=20')
+          makedepends=('pnpm' 'npm')
+          source=("\$pkgname-\$pkgver.tar.gz::https://github.com/${REPO}/archive/refs/tags/v\$pkgver.tar.gz")
+          sha256sums=('${PKG_CHECKSUM}')
+
+          build() {
+            cd "\$pkgname-\$pkgver"
+            pnpm install --frozen-lockfile
+            pnpm build
+          }
+
+          package() {
+            cd "\$pkgname-\$pkgver"
+            install -dm755 "\$pkgdir/usr/lib/\$pkgname"
+            cp -r dist node_modules package.json "\$pkgdir/usr/lib/\$pkgname/"
+            install -dm755 "\$pkgdir/usr/bin"
+            cat > "\$pkgdir/usr/bin/\$pkgname" << 'WRAPPER'
+          #!/bin/sh
+          exec node /usr/lib/domainarr/dist/main.js "\$@"
+          WRAPPER
+            chmod +x "\$pkgdir/usr/bin/\$pkgname"
+            install -Dm644 LICENSE "\$pkgdir/usr/share/licenses/\$pkgname/LICENSE"
+          }
+          EOF
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: domainarr
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ github.repository_owner }}
+          commit_email: ${{ github.repository_owner }}@users.noreply.github.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to ${{ steps.version.outputs.version }}
+          force_push: true
+
+  # Update Homebrew tap
+  publish-homebrew:
+    needs: [release, create-github-release]
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version and checksums
+        id: info
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Download binaries and get checksums
+          curl -sL "https://github.com/${REPO}/releases/download/v${VERSION}/domainarr-macos-arm64" -o macos-arm64
+          curl -sL "https://github.com/${REPO}/releases/download/v${VERSION}/domainarr-macos-x64" -o macos-x64
+          curl -sL "https://github.com/${REPO}/releases/download/v${VERSION}/domainarr-linux-x64" -o linux-x64
+          curl -sL "https://github.com/${REPO}/releases/download/v${VERSION}/domainarr-linux-arm64" -o linux-arm64
+
+          echo "sha256_macos_arm64=$(sha256sum macos-arm64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha256_macos_x64=$(sha256sum macos-x64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha256_linux_x64=$(sha256sum linux-x64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha256_linux_arm64=$(sha256sum linux-arm64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Homebrew formula
+        env:
+          PKG_VERSION: ${{ steps.info.outputs.version }}
+          REPO: ${{ github.repository }}
+          SHA256_MACOS_ARM64: ${{ steps.info.outputs.sha256_macos_arm64 }}
+          SHA256_MACOS_X64: ${{ steps.info.outputs.sha256_macos_x64 }}
+          SHA256_LINUX_ARM64: ${{ steps.info.outputs.sha256_linux_arm64 }}
+          SHA256_LINUX_X64: ${{ steps.info.outputs.sha256_linux_x64 }}
+        run: |
+          cat > domainarr.rb << EOF
+          class Domainarr < Formula
+            desc "DNS sync CLI for Pi-hole and Cloudflare"
+            homepage "https://github.com/${REPO}"
+            version "${PKG_VERSION}"
+            license "ISC"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/${REPO}/releases/download/v${PKG_VERSION}/domainarr-macos-arm64"
+                sha256 "${SHA256_MACOS_ARM64}"
+              end
+              on_intel do
+                url "https://github.com/${REPO}/releases/download/v${PKG_VERSION}/domainarr-macos-x64"
+                sha256 "${SHA256_MACOS_X64}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/${REPO}/releases/download/v${PKG_VERSION}/domainarr-linux-arm64"
+                sha256 "${SHA256_LINUX_ARM64}"
+              end
+              on_intel do
+                url "https://github.com/${REPO}/releases/download/v${PKG_VERSION}/domainarr-linux-x64"
+                sha256 "${SHA256_LINUX_X64}"
+              end
+            end
+
+            def install
+              bin.install Dir["domainarr-*"].first => "domainarr"
+            end
+
+            test do
+              assert_match "domainarr", shell_output("#{bin}/domainarr --help")
+            end
+          end
+          EOF
+
+      - name: Push to Homebrew tap
+        uses: dmnemec/copy_file_to_another_repo_action@main
+        env:
+          API_TOKEN_GITHUB: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        with:
+          source_file: 'domainarr.rb'
+          destination_repo: '${{ github.repository_owner }}/homebrew-tap'
+          destination_folder: 'Formula'
+          user_email: '${{ github.repository_owner }}@users.noreply.github.com'
+          user_name: '${{ github.repository_owner }}'
+          commit_message: 'Update domainarr to ${{ steps.info.outputs.version }}'

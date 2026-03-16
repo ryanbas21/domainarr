@@ -2,104 +2,75 @@
 
 DNS sync CLI for managing Pi-hole and Cloudflare DNS records together.
 
-## Architecture
+> **Documentation**: See `README.md` for user docs, `docs/` for technical details.
 
-This project uses Effect TypeScript with a service-oriented architecture:
+## Quick Orientation
 
-### Domain Layer (`src/domain/`)
-- `DnsRecord.ts` - Core domain models with branded types (Domain, IpAddress)
-- `errors.ts` - TaggedError types for type-safe error handling
+- **Framework**: Effect TypeScript with service-oriented architecture
+- **Entry point**: `src/main.ts` (layer composition + CLI)
+- **Services**: `src/services/` (PiholeClient, DnsProvider, DomainManager, BackupService)
+- **Domain**: `src/domain/` (DnsRecord, errors)
+- **Config**: `~/.config/domainarr/config.json`
 
-### Services (`src/services/`)
-- `PiholeClient.ts` - Pi-hole v6 REST API client (session-based auth with Ref state)
-- `DnsProvider.ts` - Abstract DNS provider interface
-- `providers/cloudflare.ts` - Cloudflare implementation using official SDK
-- `providers/porkbun.ts` - Porkbun implementation (stub)
-- `DomainManager.ts` - Orchestration service (coordinates Pi-hole + DNS provider)
-- `BackupService.ts` - Backup/restore to filesystem
-- `Logger.ts` - CLI-friendly logger with colored output
+## Key Files
 
-### Configuration (`src/config/`)
-- `AppConfig.ts` - Configuration service loading from `~/.config/domainarr/config.json`
+| File | Purpose |
+|------|---------|
+| `src/main.ts` | Layer composition, CLI entry |
+| `src/services/PiholeClient.ts` | Pi-hole v6 API client with session auth |
+| `src/services/providers/cloudflare.ts` | Cloudflare DNS provider |
+| `src/services/DomainManager.ts` | Orchestrates both providers |
+| `src/services/DnsProvider.ts` | Provider interface + error types |
+| `src/domain/DnsRecord.ts` | Domain models with branded types |
+| `src/domain/errors.ts` | TaggedError types |
 
-### CLI (`src/cli/`)
-- `commands.ts` - @effect/cli command definitions
-- `prompts.ts` - Interactive prompts for `domainarr init`
+## Effect Patterns
 
-## Layer Composition
+```typescript
+// Services use Context.Tag
+class MyService extends Context.Tag("@domainarr/MyService")<MyService, {...}>() {
+  static readonly layer = Layer.effect(MyService, Effect.gen(function* () { ... }))
+}
 
-Services are wired using Effect's Layer system in `src/main.ts`:
-```
-NodeContext + NodeHttpClient (Platform)
-        ↓
-    AppConfig (needs FileSystem)
-        ↓
-PiholeClient + DnsProvider (need Config + Http)
-        ↓
-DomainManager + BackupService (need Clients)
-```
+// Errors use Schema.TaggedError
+class MyError extends Schema.TaggedError<MyError>()("MyError", { message: Schema.String }) {}
 
-## Commands
+// Use Effect.fn for tracing
+const myOp = Effect.fn("Service.operation")(function* () { ... })
 
-- `domainarr add <domain> <ip>` - Add DNS record to both providers
-- `domainarr remove <domain>` - Remove from both providers
-- `domainarr list` - List all records with sync status
-- `domainarr sync` - Sync Pi-hole → DNS provider (Pi-hole is source of truth)
-- `domainarr backup` - Create backup to configured path
-- `domainarr restore [file]` - Restore from backup
-- `domainarr init` - Interactive setup wizard
+// Retry transient errors
+Schedule.exponential(Duration.millis(500)).pipe(Schedule.jittered, ...)
 
-## Development
-
-```bash
-pnpm install
-pnpm build      # Compile TypeScript
-pnpm typecheck  # Type check without emit
+// Session state with Ref
+const sessionRef = yield* Ref.make<Option<Session>>(Option.none())
 ```
 
-## Effect Patterns Used
+## Conventions
 
-- `Context.Tag` for dependency injection
-- `Schema.Class` for domain models with validation
-- `Schema.TaggedError` for typed errors
-- `Effect.fn` for call-site tracing (shows in error traces)
-- `Layer.effect` / `Layer.scoped` for service construction
-- `Layer.provide` / `Layer.merge` for dependency wiring
-- `Effect.catchTag` for pattern matching on errors
-- `Effect.acquireRelease` for resource lifecycle management
-- `Ref` for fiber-safe mutable state (session management)
-- `Schedule.exponential` with `Schedule.jittered` for retry with backoff
+- **Idempotent removes**: `remove` operations succeed if record doesn't exist
+- **Best-effort sync**: Operations report per-provider success/failure
+- **Pi-hole is source of truth**: `sync` pushes Pi-hole → DNS provider
+- **Retry transient errors**: 5xx, 429, connection errors; not 4xx client errors
+- **401 handling**: Clear session, re-authenticate, retry
 
-## Configuration
+## Provider Configuration
 
-Config is stored at `~/.config/domainarr/config.json`:
+The `dnsProvider` field uses discriminated union:
+
 ```json
 {
-  "pihole": {
-    "url": "http://pihole.local",
-    "password": "your-password"
-  },
   "dnsProvider": {
-    "type": "cloudflare",
-    "apiToken": "your-api-token",
-    "zoneId": "your-zone-id",
+    "type": "cloudflare",  // discriminator
+    "apiToken": "...",
+    "zoneId": "...",
     "zone": "example.com"
-  },
-  "backup": {
-    "path": "/path/to/backups"
   }
 }
 ```
 
-The `dnsProvider` field supports multiple provider types via discriminated union:
-- `type: "cloudflare"` - Cloudflare DNS
-- `type: "porkbun"` - Porkbun DNS (not yet implemented)
-
 ## Pi-hole v6 API
 
-Uses session-based authentication:
-1. POST `/api/auth` with password → returns SID + CSRF token
-2. Include `Cookie: sid=...` and `X-CSRF-Token: ...` headers
-3. DNS records at `/api/config/dns/hosts/{encoded}` (PUT to add, DELETE to remove)
-
-Encoded format: `encodeURIComponent("IP DOMAIN")`
+Session-based auth:
+1. POST `/api/auth` with password → `{ session: { sid, csrf } }`
+2. Headers: `Cookie: sid=...`, `X-CSRF-Token: ...`
+3. DNS: `/api/config/dns/hosts/{encoded}` where `encoded = encodeURIComponent("IP DOMAIN")`
