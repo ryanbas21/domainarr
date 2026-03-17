@@ -26,10 +26,20 @@ const addCommand = Command.make(
 
       // Decode and validate branded types
       const validDomain = yield* Schema.decode(Domain)(domain).pipe(
-        Effect.mapError(() => `Invalid domain format: ${domain}`)
+        Effect.catchAll(() =>
+          Console.error(`Invalid domain format: ${domain}`).pipe(
+            Effect.andThen(Effect.sync(() => { process.exitCode = 1 })),
+            Effect.andThen(Effect.interrupt)
+          )
+        )
       )
       const validIp = yield* Schema.decode(IpAddress)(ip).pipe(
-        Effect.mapError(() => `Invalid IP address format: ${ip}`)
+        Effect.catchAll(() =>
+          Console.error(`Invalid IP address format: ${ip}`).pipe(
+            Effect.andThen(Effect.sync(() => { process.exitCode = 1 })),
+            Effect.andThen(Effect.interrupt)
+          )
+        )
       )
 
       const record = DnsRecord.make({
@@ -74,7 +84,12 @@ const removeCommand = Command.make(
 
       // Decode and validate domain
       const validDomain = yield* Schema.decode(Domain)(domain).pipe(
-        Effect.mapError(() => `Invalid domain format: ${domain}`)
+        Effect.catchAll(() =>
+          Console.error(`Invalid domain format: ${domain}`).pipe(
+            Effect.andThen(Effect.sync(() => { process.exitCode = 1 })),
+            Effect.andThen(Effect.interrupt)
+          )
+        )
       )
 
       yield* Console.log(`Removing ${domain}...`)
@@ -119,10 +134,11 @@ const listCommand = Command.make("list", {}, () =>
 
     for (const record of records) {
       const pihole = record.inPihole ? "✓" : "-"
-      const dnsProvider = record.inDnsProvider ? "✓" : "-"
+      const dnsProvider = record.inDnsProvider ? (record.dnsProviderIp ? "~" : "✓") : "-"
       const domain = record.domain.padEnd(35)
       const ip = record.ip.padEnd(15)
-      yield* Console.log(`${domain} ${ip} ${pihole.padEnd(8)} ${dnsProvider}`)
+      const drift = record.dnsProviderIp ? ` (DNS: ${record.dnsProviderIp})` : ""
+      yield* Console.log(`${domain} ${ip} ${pihole.padEnd(8)} ${dnsProvider}${drift}`)
     }
 
     yield* Console.log(`\nTotal: ${records.length} records`)
@@ -142,10 +158,17 @@ const syncCommand = Command.make("sync", {}, () =>
 
     let successCount = 0
     let failCount = 0
+    let removedCount = 0
 
     for (const result of results) {
+      const isRemoval = result.pihole === "skipped"
       if (result.dnsProvider === "success") {
-        yield* Console.log(`  ✓ ${result.domain}`)
+        if (isRemoval) {
+          yield* Console.log(`  ✓ ${result.domain} (removed — not in Pi-hole)`)
+          removedCount++
+        } else {
+          yield* Console.log(`  ✓ ${result.domain}`)
+        }
         successCount++
       } else {
         yield* Console.log(`  ✗ ${result.domain}: ${result.dnsProviderError}`)
@@ -153,7 +176,10 @@ const syncCommand = Command.make("sync", {}, () =>
       }
     }
 
-    yield* Console.log(`\nSynced ${successCount} records, ${failCount} failed`)
+    const parts = [`Synced ${successCount - removedCount} records`]
+    if (removedCount > 0) parts.push(`removed ${removedCount} stale`)
+    if (failCount > 0) parts.push(`${failCount} failed`)
+    yield* Console.log(`\n${parts.join(", ")}`)
   })
 ).pipe(Command.withDescription("Sync DNS records from Pi-hole to DNS provider"))
 
@@ -231,7 +257,7 @@ const restoreCommand = Command.make(
         yield* Console.log(`\n${totalFailed} record(s) failed to restore. Check the logs above.`)
       }
     })
-).pipe(Command.withDescription("Restore DNS records from backup"))
+).pipe(Command.withDescription("Restore DNS records from backup (clears existing records first)"))
 
 // ============================================================================
 // Init Command (interactive setup)

@@ -67,10 +67,12 @@ export class DnsBackup extends Schema.Class<DnsBackup>("DnsBackup")({
 }) {
   static Json = Schema.parseJson(DnsBackup)
 
-  static empty = DnsBackup.make({
-    version: 1,
-    timestamp: new Date(),
-    pihole: [],
-    dnsProvider: []
-  })
+  static empty() {
+    return DnsBackup.make({
+      version: 1,
+      timestamp: new Date(),
+      pihole: [],
+      dnsProvider: []
+    })
+  }
 }

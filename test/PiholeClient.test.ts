@@ -162,7 +162,7 @@ describe("PiholeClient authentication", () => {
   // and the mock would need to track retry count to eventually succeed/fail deterministically.
   // The retry behavior is covered by the "clears session and re-authenticates on 401" test.
 
-  it.effect("clears session and re-authenticates on 401", () =>
+  it.live("clears session and re-authenticates on 401", () =>
     Effect.gen(function* () {
       let authCallCount = 0
       let listCallCount = 0

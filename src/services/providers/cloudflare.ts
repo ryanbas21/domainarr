@@ -22,16 +22,17 @@ const PROVIDER_NAME = "cloudflare"
 const HTTP_TIMEOUT = Duration.seconds(30)
 
 // Retry configuration for transient errors
+// Note: baseDelay is 1s (not 500ms) to provide natural backoff for Cloudflare 429s,
+// since the SDK doesn't expose Retry-After headers.
 const RETRY_CONFIG = {
   maxAttempts: 3,
-  baseDelay: Duration.millis(500),
-  maxDelay: Duration.seconds(10)
+  baseDelay: Duration.seconds(1)
 }
 
-const retrySchedule = Schedule.exponential(RETRY_CONFIG.baseDelay).pipe(
-  Schedule.jittered,
-  Schedule.either(Schedule.recurs(RETRY_CONFIG.maxAttempts - 1)),
-  Schedule.upTo(RETRY_CONFIG.maxDelay)
+// Exponential backoff with jitter, capped at maxAttempts retries
+const retrySchedule = Schedule.intersect(
+  Schedule.exponential(RETRY_CONFIG.baseDelay).pipe(Schedule.jittered),
+  Schedule.recurs(RETRY_CONFIG.maxAttempts - 1)
 )
 
 // Determine if an error is retryable (transient)
@@ -122,134 +123,46 @@ const list = Effect.fn("CloudflareProvider.list")(
 
 // Find a specific record by domain
 const find = (client: Cloudflare, zoneId: string) => (domain: Domain) =>
-  Effect.gen(function* () {
-    const rawRecords = yield* withTimeout(withRetry(Effect.tryPromise({
-      try: async () => {
-        const result: Array<{ name: string; content: string; id: string }> = []
-        for await (const record of client.dns.records.list({
-          zone_id: zoneId,
-          type: "A",
-          name: { exact: domain as string }
-        })) {
-          if (record.type === "A" && record.content) {
-            result.push({ name: record.name, content: record.content, id: record.id })
-          }
+  withTimeout(withRetry(Effect.tryPromise({
+    try: async () => {
+      const result: Array<{ name: string; content: string; id: string }> = []
+      for await (const record of client.dns.records.list({
+        zone_id: zoneId,
+        type: "A",
+        name: { exact: domain as string }
+      })) {
+        if (record.type === "A" && record.content) {
+          result.push({ name: record.name, content: record.content, id: record.id })
         }
-        return result
-      },
-      catch: wrapError
-    })))
-
-    if (rawRecords.length === 0) {
-      return Option.none()
-    }
-
-    const raw = rawRecords[0]
-    const parsed = yield* parseProviderDnsRecord(raw.name, raw.content, raw.id).pipe(
-      Effect.catchAll((e) =>
-        Effect.logWarning(`Invalid record format for "${raw.name}": ${e.message}`).pipe(
-          Effect.annotateLogs({ service: "cloudflare" }),
-          Effect.as(null)
+      }
+      return result
+    },
+    catch: wrapError
+  }))).pipe(
+    Effect.flatMap((rawRecords) => {
+      if (rawRecords.length === 0) return Effect.succeed(Option.none<ProviderDnsRecord>())
+      const raw = rawRecords[0]
+      return parseProviderDnsRecord(raw.name, raw.content, raw.id).pipe(
+        Effect.map(Option.some),
+        Effect.catchAll((e) =>
+          Effect.logWarning(`Invalid record format for "${raw.name}": ${e.message}`).pipe(
+            Effect.annotateLogs({ service: "cloudflare" }),
+            Effect.as(Option.none<ProviderDnsRecord>())
+          )
         )
       )
-    )
-
-    return parsed !== null ? Option.some(parsed) : Option.none()
-  }).pipe(Effect.withSpan("CloudflareProvider.find"))
+    }),
+    Effect.withSpan("CloudflareProvider.find")
+  )
 
 // Add a new A record
 const add = (client: Cloudflare, zoneId: string) => (record: DnsRecord) =>
-  Effect.gen(function* () {
-    yield* Effect.logInfo(`Adding ${record.domain} → ${record.ip}`).pipe(
-      Effect.annotateLogs({ service: "cloudflare", operation: "add", domain: record.domain })
-    )
-
-    const created = yield* withTimeout(withRetry(Effect.tryPromise({
-      try: () =>
-        client.dns.records.create({
-          zone_id: zoneId,
-          type: "A",
-          name: record.domain,
-          content: record.ip,
-          ttl: 1, // TTL of 1 tells Cloudflare to use automatic TTL management
-          proxied: false // Local DNS should not be proxied
-        }),
-      catch: wrapError
-    })))
-
-    // Validate response from Cloudflare API
-    const result = yield* parseProviderDnsRecord(created.name, created.content as string, created.id).pipe(
-      Effect.mapError((e) =>
-        new DnsProviderError({
-          provider: PROVIDER_NAME,
-          message: `Cloudflare returned invalid record: ${e.message}`
-        })
-      )
-    )
-
-    yield* Effect.logInfo(`Added ${record.domain}`).pipe(
-      Effect.annotateLogs({ service: "cloudflare", operation: "add", domain: record.domain })
-    )
-    return result
-  }).pipe(Effect.withSpan("CloudflareProvider.add"))
-
-// Remove a record by domain (idempotent - succeeds if record doesn't exist)
-const remove = (client: Cloudflare, zoneId: string, findFn: (domain: Domain) => Effect.Effect<Option.Option<ProviderDnsRecord>, DnsProviderErrors>) =>
-  (domain: Domain) =>
-    Effect.gen(function* () {
-      yield* Effect.logInfo(`Removing ${domain}`).pipe(
-        Effect.annotateLogs({ service: "cloudflare", operation: "remove", domain })
-      )
-
-      const existing = yield* findFn(domain)
-      if (Option.isNone(existing)) {
-        // Idempotent: record already doesn't exist, nothing to do
-        yield* Effect.logDebug(`${domain} not found, nothing to remove`).pipe(
-          Effect.annotateLogs({ service: "cloudflare", operation: "remove", domain })
-        )
-        return
-      }
-
-      yield* withTimeout(withRetry(Effect.tryPromise({
+  Effect.logInfo(`Adding ${record.domain} → ${record.ip}`).pipe(
+    Effect.annotateLogs({ service: "cloudflare", operation: "add", domain: record.domain }),
+    Effect.andThen(
+      withTimeout(withRetry(Effect.tryPromise({
         try: () =>
-          client.dns.records.delete(existing.value.recordId, {
-            zone_id: zoneId
-          }),
-        catch: wrapError
-      })))
-
-      yield* Effect.logInfo(`Removed ${domain}`).pipe(
-        Effect.annotateLogs({ service: "cloudflare", operation: "remove", domain })
-      )
-    }).pipe(Effect.withSpan("CloudflareProvider.remove"))
-
-// Upsert - add if not exists, update if IP changed
-const upsert = (
-  client: Cloudflare,
-  zoneId: string,
-  findFn: (domain: Domain) => Effect.Effect<Option.Option<ProviderDnsRecord>, DnsProviderErrors>,
-  addFn: (record: DnsRecord) => Effect.Effect<ProviderDnsRecord, DnsProviderErrors>
-) => (record: DnsRecord) =>
-  Effect.gen(function* () {
-    const existing = yield* findFn(record.domain)
-
-    if (Option.isSome(existing)) {
-      // Record exists - check if IP changed
-      if (existing.value.ip === record.ip) {
-        yield* Effect.logInfo(`${record.domain} already up to date`).pipe(
-          Effect.annotateLogs({ service: "cloudflare", operation: "upsert", domain: record.domain })
-        )
-        return existing.value
-      }
-
-      // Update existing record
-      yield* Effect.logInfo(`Updating ${record.domain} → ${record.ip}`).pipe(
-        Effect.annotateLogs({ service: "cloudflare", operation: "upsert", domain: record.domain })
-      )
-
-      const updated = yield* withTimeout(withRetry(Effect.tryPromise({
-        try: () =>
-          client.dns.records.update(existing.value.recordId, {
+          client.dns.records.create({
             zone_id: zoneId,
             type: "A",
             name: record.domain,
@@ -259,9 +172,16 @@ const upsert = (
           }),
         catch: wrapError
       })))
-
-      // Validate response
-      const result = yield* parseProviderDnsRecord(updated.name, updated.content as string, updated.id).pipe(
+    ),
+    Effect.filterOrFail(
+      (created) => created.content != null,
+      (created) => new DnsProviderError({
+        provider: PROVIDER_NAME,
+        message: `Cloudflare returned null content for ${created.name}`
+      })
+    ),
+    Effect.flatMap((created) =>
+      parseProviderDnsRecord(created.name, created.content!, created.id).pipe(
         Effect.mapError((e) =>
           new DnsProviderError({
             provider: PROVIDER_NAME,
@@ -269,16 +189,102 @@ const upsert = (
           })
         )
       )
-
-      yield* Effect.logInfo(`Updated ${record.domain}`).pipe(
-        Effect.annotateLogs({ service: "cloudflare", operation: "upsert", domain: record.domain })
+    ),
+    Effect.tap(() =>
+      Effect.logInfo(`Added ${record.domain}`).pipe(
+        Effect.annotateLogs({ service: "cloudflare", operation: "add", domain: record.domain })
       )
-      return result
-    }
+    ),
+    Effect.withSpan("CloudflareProvider.add")
+  )
 
-    // Create new record
-    return yield* addFn(record)
-  }).pipe(Effect.withSpan("CloudflareProvider.upsert"))
+// Remove a record by domain (idempotent - succeeds if record doesn't exist)
+const remove = (client: Cloudflare, zoneId: string, findFn: (domain: Domain) => Effect.Effect<Option.Option<ProviderDnsRecord>, DnsProviderErrors>) =>
+  (domain: Domain) =>
+    Effect.logInfo(`Removing ${domain}`).pipe(
+      Effect.annotateLogs({ service: "cloudflare", operation: "remove", domain }),
+      Effect.andThen(findFn(domain)),
+      Effect.flatMap(Option.match({
+        onNone: () =>
+          Effect.logDebug(`${domain} not found, nothing to remove`).pipe(
+            Effect.annotateLogs({ service: "cloudflare", operation: "remove", domain })
+          ),
+        onSome: (existing) =>
+          withTimeout(withRetry(Effect.tryPromise({
+            try: () =>
+              client.dns.records.delete(existing.recordId, {
+                zone_id: zoneId
+              }),
+            catch: wrapError
+          }))).pipe(
+            Effect.andThen(
+              Effect.logInfo(`Removed ${domain}`).pipe(
+                Effect.annotateLogs({ service: "cloudflare", operation: "remove", domain })
+              )
+            )
+          )
+      })),
+      Effect.withSpan("CloudflareProvider.remove")
+    )
+
+// Upsert - add if not exists, update if IP changed
+const upsert = (
+  client: Cloudflare,
+  zoneId: string,
+  findFn: (domain: Domain) => Effect.Effect<Option.Option<ProviderDnsRecord>, DnsProviderErrors>,
+  addFn: (record: DnsRecord) => Effect.Effect<ProviderDnsRecord, DnsProviderErrors>
+) => (record: DnsRecord) =>
+  findFn(record.domain).pipe(
+    Effect.flatMap(Option.match({
+      onNone: () => addFn(record),
+      onSome: (existing) =>
+        existing.ip === record.ip
+          ? Effect.logInfo(`${record.domain} already up to date`).pipe(
+              Effect.annotateLogs({ service: "cloudflare", operation: "upsert", domain: record.domain }),
+              Effect.as(existing)
+            )
+          : Effect.logInfo(`Updating ${record.domain} → ${record.ip}`).pipe(
+              Effect.annotateLogs({ service: "cloudflare", operation: "upsert", domain: record.domain }),
+              Effect.andThen(
+                withTimeout(withRetry(Effect.tryPromise({
+                  try: () =>
+                    client.dns.records.update(existing.recordId, {
+                      zone_id: zoneId,
+                      type: "A",
+                      name: record.domain,
+                      content: record.ip,
+                      ttl: 1,
+                      proxied: false
+                    }),
+                  catch: wrapError
+                })))
+              ),
+              Effect.filterOrFail(
+                (updated) => updated.content != null,
+                () => new DnsProviderError({
+                  provider: PROVIDER_NAME,
+                  message: `Cloudflare returned null content for ${record.domain}`
+                })
+              ),
+              Effect.flatMap((updated) =>
+                parseProviderDnsRecord(updated.name, updated.content!, updated.id).pipe(
+                  Effect.mapError((e) =>
+                    new DnsProviderError({
+                      provider: PROVIDER_NAME,
+                      message: `Cloudflare returned invalid record: ${e.message}`
+                    })
+                  )
+                )
+              ),
+              Effect.tap(() =>
+                Effect.logInfo(`Updated ${record.domain}`).pipe(
+                  Effect.annotateLogs({ service: "cloudflare", operation: "upsert", domain: record.domain })
+                )
+              )
+            )
+    })),
+    Effect.withSpan("CloudflareProvider.upsert")
+  )
 
 // Create Cloudflare provider layer from config
 export const makeCloudflareProvider = (config: CloudflareConfig): Layer.Layer<DnsProvider> =>

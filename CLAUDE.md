@@ -24,6 +24,13 @@ DNS sync CLI for managing Pi-hole and Cloudflare DNS records together.
 | `src/domain/DnsRecord.ts` | Domain models with branded types |
 | `src/domain/errors.ts` | TaggedError types |
 
+## Working Model
+**Always create a new branch**
+**Always pr against main**
+**Always write a test first**
+**Always fix or write features against a test**
+**Always use pnpm**
+
 ## Effect Patterns
 
 ```typescript
@@ -32,11 +39,13 @@ class MyService extends Context.Tag("@domainarr/MyService")<MyService, {...}>() 
   static readonly layer = Layer.effect(MyService, Effect.gen(function* () { ... }))
 }
 
-// Errors use Schema.TaggedError
+// Errors use Schema.TaggedError or Data.TaggedError
 class MyError extends Schema.TaggedError<MyError>()("MyError", { message: Schema.String }) {}
+class MyError extends Data.TaggedError<MyError>()("MyError", { message: Schema.String }) {}
 
 // Use Effect.fn for tracing
 const myOp = Effect.fn("Service.operation")(function* () { ... })
+
 
 // Retry transient errors
 Schedule.exponential(Duration.millis(500)).pipe(Schedule.jittered, ...)
@@ -47,6 +56,9 @@ const sessionRef = yield* Ref.make<Option<Session>>(Option.none())
 
 ## Conventions
 
+- **Prefer Effect pipe over Gen** Personal preference that `pipe` is cleaner, however only when `pipe` doesn't have excessive nesting, if it's not immediately clearer, prefer gen 
+- **Use Effect modules over Native** Effect has native modules like Array,Record,Stream,PubSub,etc prefer those over alternatives or native methods when the benefit is clear.
+- **Push effects to the edge** Always run code at the edge of the program, imperative shell, functional core
 - **Idempotent removes**: `remove` operations succeed if record doesn't exist
 - **Best-effort sync**: Operations report per-provider success/failure
 - **Pi-hole is source of truth**: `sync` pushes Pi-hole → DNS provider
