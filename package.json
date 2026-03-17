@@ -1,6 +1,6 @@
 {
   "name": "domainarr",
-  "version": "0.0.2",
+  "version": "0.0.1",
   "description": "DNS sync CLI for Pi-hole and Cloudflare",
   "type": "module",
   "bin": {
@@ -14,7 +14,7 @@
     "prepare": "effect-language-service patch",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "pnpm build && changeset publish"
+    "release": "pnpm build && pnpm publish --access public --no-git-checks"
   },
   "keywords": [
     "dns",
